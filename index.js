@@ -558,7 +558,7 @@ function Physics (mcData, world) {
         // Client-side sprinting (don't rely on server-side sprinting)
         // setSprinting in LivingEntity.java
         playerSpeedAttribute = attribute.deleteAttributeModifier(playerSpeedAttribute, physics.sprintingUUID) // always delete sprinting (if it exists)
-        if (entity.control.sprint) {
+        if (entity.isSprinting) {
           if (!attribute.checkAttributeModifier(playerSpeedAttribute, physics.sprintingUUID)) {
             playerSpeedAttribute = attribute.addAttributeModifier(playerSpeedAttribute, {
               uuid: physics.sprintingUUID,
@@ -590,7 +590,7 @@ function Physics (mcData, world) {
           acceleration = physics.airborneAcceleration
         }
 
-        if (entity.control.sprint) {
+        if (entity.isSprinting) {
           const airSprintFactor = acceleration * 0.3
           acceleration += airSprintFactor
         }
@@ -727,6 +727,16 @@ function Physics (mcData, world) {
     entity.isInWater = isInWaterApplyCurrent(world, waterBB, vel)
     entity.isInLava = isMaterialInBB(world, lavaBB, lavaIds)
 
+    // Update internal sprint state - sprinting is disabled on horizontal collision
+    // and re-enabled when control.sprint is pressed and no collision
+    if (entity.isCollidedHorizontally) {
+      entity.isSprinting = false
+    } else if (entity.control.sprint && !entity.isSprinting) {
+      entity.isSprinting = true
+    } else if (!entity.control.sprint) {
+      entity.isSprinting = false
+    }
+
     // Reset velocity component if it falls under the threshold
     if (Math.abs(vel.x) < physics.negligeableVelocity) vel.x = 0
     if (Math.abs(vel.y) < physics.negligeableVelocity) vel.y = 0
@@ -743,7 +753,7 @@ function Physics (mcData, world) {
         if (entity.jumpBoost > 0) {
           vel.y = f(vel.y + f(0.1 * entity.jumpBoost))
         }
-        if (entity.control.sprint) {
+        if (entity.isSprinting) {
           const yaw = Math.PI - entity.yaw
           vel.x = f(vel.x - f(Math.sin(yaw) * 0.2))
           vel.z = f(vel.z + f(Math.cos(yaw) * 0.2))
@@ -833,6 +843,8 @@ class PlayerState {
     this.isCollidedHorizontally = bot.entity.isCollidedHorizontally
     this.isCollidedVertically = bot.entity.isCollidedVertically
     this.elytraFlying = bot.entity.elytraFlying
+    // Internal sprint state - disabled on horizontal collision, re-enabled when control.sprint and no collision
+    this.isSprinting = bot.entity.isSprinting ?? control.sprint
     this.jumpTicks = bot.jumpTicks
     this.jumpQueued = bot.jumpQueued
     this.fireworkRocketDuration = bot.fireworkRocketDuration
@@ -879,6 +891,7 @@ class PlayerState {
     bot.entity.isCollidedHorizontally = this.isCollidedHorizontally
     bot.entity.isCollidedVertically = this.isCollidedVertically
     bot.entity.elytraFlying = this.elytraFlying
+    bot.entity.isSprinting = this.isSprinting
     bot.jumpTicks = this.jumpTicks
     bot.jumpQueued = this.jumpQueued
     bot.fireworkRocketDuration = this.fireworkRocketDuration
