@@ -70,8 +70,8 @@ function Physics (mcData, world) {
     sprintSpeed: 0.3,
     sneakSpeed: 0.3,
     stepHeight: 0.6, // how much height can the bot step on without jump
-    // Bedrock uses much smaller threshold (velocities can go down to ~1e-8)
-    negligeableVelocity: isBedrock ? 1e-9 : 0.003, // actually 0.005 for 1.8, but seems fine
+    // Bedrock zeros velocities below ~1.1e-7 (based on test fixture data)
+    negligeableVelocity: isBedrock ? 1.1e-7 : 0.003, // actually 0.005 for 1.8, but seems fine
     soulsandSpeed: 0.4,
     honeyblockSpeed: 0.4,
     honeyblockJumpSpeed: 0.4,
@@ -82,8 +82,8 @@ function Physics (mcData, world) {
     waterInertia: 0.8,
     lavaInertia: 0.5,
     liquidAcceleration: 0.02,
-    airborneInertia: 0.91,
-    airborneAcceleration: 0.02,
+    airborneInertia: Math.fround(0.91),
+    airborneAcceleration: Math.fround(0.02),
     defaultSlipperiness: 0.6,
     outOfLiquidImpulse: 0.3,
     autojumpCooldown: 10, // ticks (0.5s)
@@ -435,7 +435,6 @@ function Physics (mcData, world) {
     const cos = f(Math.cos(yaw))
 
     const vel = entity.vel
-    // Single fround on result - matches Bedrock behavior exactly
     vel.x = f(vel.x - (strafe * cos + forward * sin))
     vel.z = f(vel.z + (forward * cos - strafe * sin))
   }
@@ -583,11 +582,16 @@ function Physics (mcData, world) {
         }
         if (acceleration < 0) acceleration = 0 // acceleration should not be negative
       } else {
-        acceleration = physics.airborneAcceleration
         inertia = physics.airborneInertia
+        if (isBedrock) {
+          // Bedrock: airborne acceleration also uses * 0.98 factor like ground
+          acceleration = f(physics.airborneAcceleration * f(0.98))
+        } else {
+          acceleration = physics.airborneAcceleration
+        }
 
         if (entity.control.sprint) {
-          const airSprintFactor = physics.airborneAcceleration * 0.3
+          const airSprintFactor = acceleration * 0.3
           acceleration += airSprintFactor
         }
       }
