@@ -62,7 +62,7 @@ function Physics (mcData, world) {
   if (blocksByName.bubble_column) waterLike.add(bubblecolumnId)
 
   const physics = {
-    gravity: 0.08, // blocks/tick^2 https://minecraft.gamepedia.com/Entity#Motion_of_entities
+    gravity: Math.fround(0.08), // blocks/tick^2 https://minecraft.gamepedia.com/Entity#Motion_of_entities
     airdrag: Math.fround(1 - 0.02), // actually (1 - drag)
     yawSpeed: 3.0,
     pitchSpeed: 3.0,
@@ -608,11 +608,10 @@ function Physics (mcData, world) {
 
       // Apply friction and gravity (single fround for better Bedrock match)
       if (entity.levitation > 0) {
-        vel.y = f(vel.y + (0.05 * entity.levitation - vel.y) * 0.2)
+        vel.y = f(f(vel.y + (0.05 * entity.levitation - vel.y) * 0.2) * physics.airdrag)
       } else {
-        vel.y = f(vel.y - physics.gravity * gravityMultiplier)
+        vel.y = f(f(vel.y - physics.gravity * gravityMultiplier) * physics.airdrag)
       }
-      vel.y = f(vel.y * physics.airdrag)
       vel.x = f(vel.x * inertia)
       vel.z = f(vel.z * inertia)
     }
@@ -757,6 +756,7 @@ function Physics (mcData, world) {
     let strafe = (entity.control.right - entity.control.left) * controlMultiplier
     let forward = (entity.control.forward - entity.control.back) * controlMultiplier
 
+    // Sneak is applied to controls for both Java and Bedrock
     if (entity.control.sneak) {
       strafe *= physics.sneakSpeed
       forward *= physics.sneakSpeed
