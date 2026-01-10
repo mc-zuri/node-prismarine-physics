@@ -105,11 +105,12 @@ function Physics (mcData, world) {
   }
 
   if (isBedrock) {
-    // Bedrock water gravity gives terminal velocity of -0.005
-    // terminal = -gravity / (1 - inertia) = -gravity / 0.2
-    // -0.005 = -gravity / 0.2, so gravity = 0.001
-    physics.waterGravity = 0.001
-    physics.lavaGravity = 0.001 // TODO: verify lava gravity for Bedrock
+    // Bedrock water physics: vel.y = vel.y * 0.8 - 0.005
+    // On-ground underwater velocity equals waterGravity (0.005)
+    // Note: theoretical terminal velocity would be -0.005/0.2 = -0.025 but
+    // player typically lands on floor before reaching it
+    physics.waterGravity = 0.005
+    physics.lavaGravity = 0.005 // TODO: verify lava gravity for Bedrock
   } else if (supportFeature('independentLiquidGravity')) {
     physics.waterGravity = 0.02
     physics.lavaGravity = 0.02
