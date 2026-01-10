@@ -81,7 +81,7 @@ function Physics (mcData, world) {
     playerHeight: 1.8,
     waterInertia: 0.8,
     lavaInertia: 0.5,
-    liquidAcceleration: 0.02,
+    liquidAcceleration: isBedrock ? 0.0196 : 0.02, // Bedrock uses 0.0196 for underwater movement
     airborneInertia: Math.fround(0.91),
     airborneAcceleration: Math.fround(0.02),
     defaultSlipperiness: 0.6,
@@ -104,7 +104,13 @@ function Physics (mcData, world) {
     sprintingUUID: '662a6b8d-da3e-4c1c-8813-96ea6097278d' // SPEED_MODIFIER_SPRINTING_UUID is from LivingEntity.java
   }
 
-  if (supportFeature('independentLiquidGravity')) {
+  if (isBedrock) {
+    // Bedrock water gravity gives terminal velocity of -0.005
+    // terminal = -gravity / (1 - inertia) = -gravity / 0.2
+    // -0.005 = -gravity / 0.2, so gravity = 0.001
+    physics.waterGravity = 0.001
+    physics.lavaGravity = 0.001 // TODO: verify lava gravity for Bedrock
+  } else if (supportFeature('independentLiquidGravity')) {
     physics.waterGravity = 0.02
     physics.lavaGravity = 0.02
   } else if (supportFeature('proportionalLiquidGravity')) {
