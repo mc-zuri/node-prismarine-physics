@@ -499,6 +499,13 @@ function Physics (mcData, world) {
         if (entity.dolphinsGrace > 0) horizontalInertia = 0.96
       }
 
+      // Bedrock underwater sprint has velocity-dependent acceleration boost
+      // Formula: acceleration = base * 1.125 + 0.125 * horizontalSpeed
+      if (isBedrock && entity.isSprinting) {
+        const horizontalSpeed = Math.sqrt(f(f(vel.x * vel.x) + f(vel.z * vel.z)))
+        acceleration = f(f(acceleration * 1.125) + f(0.125 * horizontalSpeed))
+      }
+
       applyHeading(entity, strafe, forward, acceleration)
       moveEntity(entity, world, vel.x, vel.y, vel.z)
       vel.y = f(vel.y * inertia)
@@ -778,7 +785,8 @@ function Physics (mcData, world) {
     let forward = (entity.control.forward - entity.control.back) * controlMultiplier
 
     // Sneak is applied to controls for both Java and Bedrock
-    if (entity.control.sneak) {
+    // But for Bedrock underwater, sneak is for diving, not slower horizontal movement
+    if (entity.control.sneak && !(isBedrock && (entity.isInWater || entity.isInLava))) {
       strafe *= physics.sneakSpeed
       forward *= physics.sneakSpeed
     }
