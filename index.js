@@ -4,12 +4,16 @@ const math = require('./lib/math')
 const features = require('./lib/features')
 const attribute = require('./lib/attribute')
 
+// Use float32 precision like Minecraft/Bedrock
+const f = Math.fround
+
 function makeSupportFeature (mcData) {
   return feature => features.some(({ name, versions }) => name === feature && versions.includes(mcData.version.majorVersion))
 }
 
 function Physics (mcData, world) {
   const supportFeature = makeSupportFeature(mcData)
+  const isBedrock = mcData.version.type === 'bedrock'
   const blocksByName = mcData.blocksByName
 
   // Block Slipperiness
@@ -66,7 +70,8 @@ function Physics (mcData, world) {
     sprintSpeed: 0.3,
     sneakSpeed: 0.3,
     stepHeight: 0.6, // how much height can the bot step on without jump
-    negligeableVelocity: 0.003, // actually 0.005 for 1.8, but seems fine
+    // Bedrock uses much smaller threshold (velocities can go down to ~1e-8)
+    negligeableVelocity: isBedrock ? 1e-9 : 0.003, // actually 0.005 for 1.8, but seems fine
     soulsandSpeed: 0.4,
     honeyblockSpeed: 0.4,
     honeyblockJumpSpeed: 0.4,
@@ -422,16 +427,17 @@ function Physics (mcData, world) {
 
     speed = multiplier / Math.max(speed, 1)
 
-    strafe *= speed
-    forward *= speed
+    strafe = f(strafe * speed)
+    forward = f(forward * speed)
 
     const yaw = Math.PI - entity.yaw
-    const sin = Math.sin(yaw)
-    const cos = Math.cos(yaw)
+    const sin = f(Math.sin(yaw))
+    const cos = f(Math.cos(yaw))
 
     const vel = entity.vel
-    vel.x -= strafe * cos + forward * sin
-    vel.z += forward * cos - strafe * sin
+    // Single fround on result - matches Bedrock behavior exactly
+    vel.x = f(vel.x - (strafe * cos + forward * sin))
+    vel.z = f(vel.z + (forward * cos - strafe * sin))
   }
 
   const climbableTrapdoorFeature = supportFeature('climbableTrapdoor')
@@ -489,10 +495,10 @@ function Physics (mcData, world) {
 
       applyHeading(entity, strafe, forward, acceleration)
       moveEntity(entity, world, vel.x, vel.y, vel.z)
-      vel.y *= inertia
-      vel.y -= (entity.isInWater ? physics.waterGravity : physics.lavaGravity) * gravityMultiplier
-      vel.x *= horizontalInertia
-      vel.z *= horizontalInertia
+      vel.y = f(vel.y * inertia)
+      vel.y = f(vel.y - f((entity.isInWater ? physics.waterGravity : physics.lavaGravity) * gravityMultiplier))
+      vel.x = f(vel.x * horizontalInertia)
+      vel.z = f(vel.z * horizontalInertia)
 
       if (entity.isCollidedHorizontally && doesNotCollide(world, pos.offset(vel.x, vel.y + 0.6 - pos.y + lastY, vel.z))) {
         vel.y = physics.outOfLiquidImpulse // jump out of liquid
@@ -528,9 +534,9 @@ function Physics (mcData, world) {
         vel.z += (lookDir.z / cosPitch * horizontalSpeed - vel.z) * 0.1
       }
 
-      vel.x *= 0.99
-      vel.y *= 0.98
-      vel.z *= 0.99
+      vel.x = f(vel.x * 0.99)
+      vel.y = f(vel.y * 0.98)
+      vel.z = f(vel.z * 0.99)
       moveEntity(entity, world, vel.x, vel.y, vel.z)
 
       if (entity.onGround) {
@@ -563,9 +569,18 @@ function Physics (mcData, world) {
           }
         }
         // Calculate what the speed is (0.1 if no modification)
-        const attributeSpeed = attribute.getAttributeValue(playerSpeedAttribute)
-        inertia = (blockSlipperiness[blockUnder.type] || physics.defaultSlipperiness) * 0.91
-        acceleration = attributeSpeed * (0.1627714 / (inertia * inertia * inertia))
+        const attributeSpeed = f(attribute.getAttributeValue(playerSpeedAttribute))
+        const slipperiness = f(blockSlipperiness[blockUnder.type] || physics.defaultSlipperiness)
+        // Bedrock uses different formulas for inertia and acceleration
+        if (isBedrock) {
+          // Bedrock: inertia = f(f(slip) * f(0.91)), accel = f(speed * f(0.98))
+          inertia = f(slipperiness * f(0.91))
+          acceleration = f(attributeSpeed * f(0.98))
+        } else {
+          // Java: inertia = f(slip * 0.91), accel = speed * 0.1627714 / (inertia^3)
+          inertia = f(slipperiness * 0.91)
+          acceleration = f(attributeSpeed * f(0.1627714 / f(inertia * f(inertia * inertia))))
+        }
         if (acceleration < 0) acceleration = 0 // acceleration should not be negative
       } else {
         acceleration = physics.airborneAcceleration
@@ -586,21 +601,20 @@ function Physics (mcData, world) {
       }
 
       moveEntity(entity, world, vel.x, vel.y, vel.z)
-
       if (isOnLadder(world, pos) && (entity.isCollidedHorizontally ||
         (supportFeature('climbUsingJump') && entity.control.jump))) {
         vel.y = physics.ladderClimbSpeed // climb ladder
       }
 
-      // Apply friction and gravity
+      // Apply friction and gravity (single fround for better Bedrock match)
       if (entity.levitation > 0) {
-        vel.y += (0.05 * entity.levitation - vel.y) * 0.2
+        vel.y = f(vel.y + (0.05 * entity.levitation - vel.y) * 0.2)
       } else {
-        vel.y -= physics.gravity * gravityMultiplier
+        vel.y = f(vel.y - physics.gravity * gravityMultiplier)
       }
-      vel.y *= physics.airdrag
-      vel.x *= inertia
-      vel.z *= inertia
+      vel.y = f(vel.y * physics.airdrag)
+      vel.x = f(vel.x * inertia)
+      vel.z = f(vel.z * inertia)
     }
   }
 
@@ -719,17 +733,17 @@ function Physics (mcData, world) {
     if (entity.control.jump || entity.jumpQueued) {
       if (entity.jumpTicks > 0) entity.jumpTicks--
       if (entity.isInWater || entity.isInLava) {
-        vel.y += 0.04
+        vel.y = f(vel.y + 0.04)
       } else if (entity.onGround && entity.jumpTicks === 0) {
         const blockBelow = world.getBlock(entity.pos.floored().offset(0, -0.5, 0))
-        vel.y = Math.fround(0.42) * ((blockBelow && blockBelow.type === honeyblockId) ? physics.honeyblockJumpSpeed : 1)
+        vel.y = f(f(0.42) * ((blockBelow && blockBelow.type === honeyblockId) ? physics.honeyblockJumpSpeed : 1))
         if (entity.jumpBoost > 0) {
-          vel.y += 0.1 * entity.jumpBoost
+          vel.y = f(vel.y + f(0.1 * entity.jumpBoost))
         }
         if (entity.control.sprint) {
           const yaw = Math.PI - entity.yaw
-          vel.x -= Math.sin(yaw) * 0.2
-          vel.z += Math.cos(yaw) * 0.2
+          vel.x = f(vel.x - f(Math.sin(yaw) * 0.2))
+          vel.z = f(vel.z + f(Math.cos(yaw) * 0.2))
         }
         entity.jumpTicks = physics.autojumpCooldown
       }
@@ -738,8 +752,10 @@ function Physics (mcData, world) {
     }
     entity.jumpQueued = false
 
-    let strafe = (entity.control.right - entity.control.left) * 0.98
-    let forward = (entity.control.forward - entity.control.back) * 0.98
+    // For Java, 0.98 is applied to controls. For Bedrock, 0.98 is in the acceleration formula.
+    const controlMultiplier = isBedrock ? 1.0 : 0.98
+    let strafe = (entity.control.right - entity.control.left) * controlMultiplier
+    let forward = (entity.control.forward - entity.control.back) * controlMultiplier
 
     if (entity.control.sneak) {
       strafe *= physics.sneakSpeed
@@ -753,9 +769,9 @@ function Physics (mcData, world) {
         entity.fireworkRocketDuration = 0
       } else {
         const { lookDir } = getLookingVector(entity)
-        vel.x += lookDir.x * 0.1 + (lookDir.x * 1.5 - vel.x) * 0.5
-        vel.y += lookDir.y * 0.1 + (lookDir.y * 1.5 - vel.y) * 0.5
-        vel.z += lookDir.z * 0.1 + (lookDir.z * 1.5 - vel.z) * 0.5
+        vel.x = f(vel.x + f(f(lookDir.x * 0.1) + f(f(lookDir.x * 1.5) - vel.x) * 0.5))
+        vel.y = f(vel.y + f(f(lookDir.y * 0.1) + f(f(lookDir.y * 1.5) - vel.y) * 0.5))
+        vel.z = f(vel.z + f(f(lookDir.z * 0.1) + f(f(lookDir.z * 1.5) - vel.z) * 0.5))
         --entity.fireworkRocketDuration
       }
     }
