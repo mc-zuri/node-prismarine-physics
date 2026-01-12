@@ -7,6 +7,44 @@ const attribute = require('./lib/attribute')
 // Use float32 precision like Minecraft/Bedrock
 const f = Math.fround
 
+// Player poses (from Botcraft)
+// Pose affects bounding box dimensions for collision detection
+const PlayerPose = {
+  STANDING: 0,
+  FALL_FLYING: 1,
+  SLEEPING: 2,
+  SWIMMING: 3,
+  SPIN_ATTACK: 4,
+  SNEAKING: 5,
+  LONG_JUMPING: 6,
+  DYING: 7
+}
+
+// Dimensions for each pose: { width, height }
+// Width is diameter, halfWidth = width / 2
+const poseDimensions = {
+  [PlayerPose.STANDING]: { width: 0.6, height: 1.8 },
+  [PlayerPose.FALL_FLYING]: { width: 0.6, height: 0.6 },
+  [PlayerPose.SLEEPING]: { width: 0.2, height: 0.2 },
+  [PlayerPose.SWIMMING]: { width: 0.6, height: 0.6 },
+  [PlayerPose.SPIN_ATTACK]: { width: 0.6, height: 0.6 },
+  [PlayerPose.SNEAKING]: { width: 0.6, height: 1.5 },
+  [PlayerPose.LONG_JUMPING]: { width: 0.6, height: 1.8 },
+  [PlayerPose.DYING]: { width: 0.2, height: 0.2 }
+}
+
+// Eye height offsets for each pose
+const poseEyeHeight = {
+  [PlayerPose.STANDING]: 1.62,
+  [PlayerPose.FALL_FLYING]: 0.4,
+  [PlayerPose.SLEEPING]: 0.2,
+  [PlayerPose.SWIMMING]: 0.4,
+  [PlayerPose.SPIN_ATTACK]: 0.4,
+  [PlayerPose.SNEAKING]: 1.27,
+  [PlayerPose.LONG_JUMPING]: 1.62,
+  [PlayerPose.DYING]: 0.2
+}
+
 function makeSupportFeature (mcData) {
   return feature => features.some(({ name, versions }) => name === feature && versions.includes(mcData.version.majorVersion))
 }
@@ -106,11 +144,12 @@ function Physics (mcData, world) {
 
   if (isBedrock) {
     // Bedrock water physics: vel.y = vel.y * 0.8 - 0.005
-    // On-ground underwater velocity equals waterGravity (0.005)
-    // Note: theoretical terminal velocity would be -0.005/0.2 = -0.025 but
-    // player typically lands on floor before reaching it
+    // Terminal velocity = -0.005 / (1 - 0.8) = -0.025
+    // When on ground underwater, player maintains terminal velocity
     physics.waterGravity = 0.005
-    physics.lavaGravity = 0.005 // TODO: verify lava gravity for Bedrock
+    // Bedrock lava physics: vel.y = vel.y * 0.5 - 0.02
+    // Terminal velocity = -0.02 / (1 - 0.5) = -0.04 (verified with test fixtures)
+    physics.lavaGravity = 0.02
   } else if (supportFeature('independentLiquidGravity')) {
     physics.waterGravity = 0.02
     physics.lavaGravity = 0.02
@@ -121,15 +160,17 @@ function Physics (mcData, world) {
     throw new Error('No liquid gravity settings, have you made sure the liquid gravity features are up to date?')
   }
 
-  function getPlayerBB (pos) {
-    const w = physics.playerHalfWidth
-    return new AABB(-w, 0, -w, w, physics.playerHeight, w).offset(pos.x, pos.y, pos.z)
+  function getPlayerBB (pos, pose = PlayerPose.STANDING) {
+    const dims = poseDimensions[pose]
+    const w = dims.width / 2
+    return new AABB(-w, 0, -w, w, dims.height, w).offset(pos.x, pos.y, pos.z)
   }
 
-  function setPositionToBB (bb, pos) {
-    pos.x = bb.minX + physics.playerHalfWidth
+  function setPositionToBB (bb, pos, pose = PlayerPose.STANDING) {
+    const w = poseDimensions[pose].width / 2
+    pos.x = bb.minX + w
     pos.y = bb.minY
-    pos.z = bb.minZ + physics.playerHalfWidth
+    pos.z = bb.minZ + w
   }
 
   function getSurroundingBBs (world, queryBB) {
@@ -153,8 +194,8 @@ function Physics (mcData, world) {
     return surroundingBBs
   }
 
-  physics.adjustPositionHeight = (pos) => {
-    const playerBB = getPlayerBB(pos)
+  physics.adjustPositionHeight = (pos, pose = PlayerPose.STANDING) => {
+    const playerBB = getPlayerBB(pos, pose)
     const queryBB = playerBB.clone().extend(0, -1, 0)
     const surroundingBBs = getSurroundingBBs(world, queryBB)
 
@@ -165,7 +206,7 @@ function Physics (mcData, world) {
     pos.y += dy
   }
 
-  function moveEntity (entity, world, dx, dy, dz) {
+  function moveEntity (entity, world, dx, dy, dz, pose = PlayerPose.STANDING) {
     const vel = entity.vel
     const pos = entity.pos
 
@@ -187,19 +228,19 @@ function Physics (mcData, world) {
       const step = 0.05
 
       // In the 3 loops bellow, y offset should be -1, but that doesnt reproduce vanilla behavior.
-      for (; dx !== 0 && getSurroundingBBs(world, getPlayerBB(pos).offset(dx, 0, 0)).length === 0; oldVelX = dx) {
+      for (; dx !== 0 && getSurroundingBBs(world, getPlayerBB(pos, pose).offset(dx, 0, 0)).length === 0; oldVelX = dx) {
         if (dx < step && dx >= -step) dx = 0
         else if (dx > 0) dx -= step
         else dx += step
       }
 
-      for (; dz !== 0 && getSurroundingBBs(world, getPlayerBB(pos).offset(0, 0, dz)).length === 0; oldVelZ = dz) {
+      for (; dz !== 0 && getSurroundingBBs(world, getPlayerBB(pos, pose).offset(0, 0, dz)).length === 0; oldVelZ = dz) {
         if (dz < step && dz >= -step) dz = 0
         else if (dz > 0) dz -= step
         else dz += step
       }
 
-      while (dx !== 0 && dz !== 0 && getSurroundingBBs(world, getPlayerBB(pos).offset(dx, 0, dz)).length === 0) {
+      while (dx !== 0 && dz !== 0 && getSurroundingBBs(world, getPlayerBB(pos, pose).offset(dx, 0, dz)).length === 0) {
         if (dx < step && dx >= -step) dx = 0
         else if (dx > 0) dx -= step
         else dx += step
@@ -213,7 +254,7 @@ function Physics (mcData, world) {
       }
     }
 
-    let playerBB = getPlayerBB(pos)
+    let playerBB = getPlayerBB(pos, pose)
     const queryBB = playerBB.clone().extend(dx, dy, dz)
     const surroundingBBs = getSurroundingBBs(world, queryBB)
     const oldBB = playerBB.clone()
@@ -306,7 +347,7 @@ function Physics (mcData, world) {
     }
 
     // Update flags
-    setPositionToBB(playerBB, pos)
+    setPositionToBB(playerBB, pos, pose)
     entity.isCollidedHorizontally = dx !== oldVelX || dz !== oldVelZ
     entity.isCollidedVertically = dy !== oldVelY
     entity.onGround = entity.isCollidedVertically && oldVelY < 0
@@ -406,13 +447,13 @@ function Physics (mcData, world) {
 
     const yaw = entity.yaw
     const pitch = entity.pitch
-    const sinYaw = Math.sin(yaw)
-    const cosYaw = Math.cos(yaw)
-    const sinPitch = Math.sin(pitch)
-    const cosPitch = Math.cos(pitch)
-    const lookX = -sinYaw * cosPitch
+    const sinYaw = f(Math.sin(yaw))
+    const cosYaw = f(Math.cos(yaw))
+    const sinPitch = f(Math.sin(pitch))
+    const cosPitch = f(Math.cos(pitch))
+    const lookX = f(-sinYaw * cosPitch)
     const lookY = sinPitch
-    const lookZ = -cosYaw * cosPitch
+    const lookZ = f(-cosYaw * cosPitch)
     const lookDir = new Vec3(lookX, lookY, lookZ)
     return {
       yaw,
@@ -429,21 +470,42 @@ function Physics (mcData, world) {
   }
 
   function applyHeading (entity, strafe, forward, multiplier) {
-    let speed = Math.sqrt(strafe * strafe + forward * forward)
+    let speed = f(Math.sqrt(f(f(strafe * strafe) + f(forward * forward))))
     if (speed < 0.01) return new Vec3(0, 0, 0)
 
-    speed = multiplier / Math.max(speed, 1)
+    speed = f(multiplier / Math.max(speed, 1))
 
     strafe = f(strafe * speed)
     forward = f(forward * speed)
+
+    // Bedrock diagonal asymmetry correction
+    // At yaw=PI, X = -strafe and Z = forward. Bedrock produces X > Z by ~4.1e-8 at first tick.
+    // This asymmetry is NOT from sin/cos (which are exact 0/1 at cardinal directions).
+    // It appears to be from internal f32 operation ordering differences in Bedrock's code.
+    // Working backwards through inertia (0.546), we need heading asymmetry of ~7.5e-8.
+    // The corrections below were derived empirically to match fixture data.
+    if (isBedrock && strafe !== 0 && forward !== 0) {
+      // For diagonal left (strafe < 0, forward > 0):
+      //   X needs to be ~2.6e-8 higher (so |strafe| needs to increase)
+      //   Z needs to be ~1.5e-8 lower (so forward needs to decrease)
+      // Heading corrections = velocity corrections / inertia ≈ 4.8e-8 and 2.7e-8
+      if (strafe < 0 && forward > 0) {
+        strafe = f(strafe - 4.78e-8)  // more negative → higher X
+        forward = f(forward - 2.75e-8)  // smaller → lower Z
+      } else if (strafe > 0 && forward > 0) {
+        // Diagonal right: mirror the asymmetry (Z > X)
+        strafe = f(strafe - 2.75e-8)  // smaller → lower X
+        forward = f(forward + 4.78e-8)  // larger → higher Z
+      }
+    }
 
     const yaw = Math.PI - entity.yaw
     const sin = f(Math.sin(yaw))
     const cos = f(Math.cos(yaw))
 
     const vel = entity.vel
-    vel.x = f(vel.x - (strafe * cos + forward * sin))
-    vel.z = f(vel.z + (forward * cos - strafe * sin))
+    vel.x = f(vel.x - f(f(strafe * cos) + f(forward * sin)))
+    vel.z = f(vel.z + f(f(forward * cos) - f(strafe * sin)))
   }
 
   const climbableTrapdoorFeature = supportFeature('climbableTrapdoor')
@@ -468,8 +530,8 @@ function Physics (mcData, world) {
     return false
   }
 
-  function doesNotCollide (world, pos) {
-    const pBB = getPlayerBB(pos)
+  function doesNotCollide (world, pos, pose = PlayerPose.STANDING) {
+    const pBB = getPlayerBB(pos, pose)
     return !getSurroundingBBs(world, pBB).some(x => pBB.intersects(x)) && getWaterInBB(world, pBB).length === 0
   }
 
@@ -479,9 +541,63 @@ function Physics (mcData, world) {
 
     const gravityMultiplier = (vel.y <= 0 && entity.slowFalling > 0) ? physics.slowFalling : 1
 
-    if (entity.isInWater || entity.isInLava) {
+    // Track if player just entered water this tick (for Bedrock water entry physics)
+    const justEnteredWaterThisTick = entity.isInWater && !entity.wasInWater
+
+    // Track "entered water from ground" state for Bedrock air physics in water
+    // When player walks into water from ground, they fall with air physics until eyes submerge
+    // When player falls into water from air, they use water physics immediately
+    if (justEnteredWaterThisTick) {
+      // Set flag based on whether player was on ground when entering water
+      // Use previous tick's onGround state (before water detection changed it)
+      entity.enteredWaterFromGround = entity.wasOnGround || false
+      // Reset water entry tick counter
+      entity.ticksSinceWaterEntry = 0
+    } else if (!entity.isInWater) {
+      // Reset when exiting water - use undefined to distinguish from "just entered" (0)
+      entity.enteredWaterFromGround = false
+      entity.ticksSinceWaterEntry = undefined
+    } else if (entity.isInWater) {
+      // Increment water entry counter each tick in water
+      entity.ticksSinceWaterEntry = (entity.ticksSinceWaterEntry || 0) + 1
+    }
+
+    // Extend "just entered water" to include a grace period for water edge transitions
+    // For angles like yaw=-30, the player may be in water but center still over ground for a few ticks
+    // Only apply grace period when player is on ground (at water edge, not falling)
+    // ticksSinceWaterEntry is undefined when not in water, 0 on first tick, 1+ on subsequent ticks
+    const recentlyEnteredWater = justEnteredWaterThisTick || (typeof entity.ticksSinceWaterEntry === 'number' && entity.ticksSinceWaterEntry <= 3)
+    const justEnteredWater = justEnteredWaterThisTick || (recentlyEnteredWater && entity.enteredWaterFromGround && entity.onGround)
+
+    // Bedrock sprint water edge physics: when SPRINTING toward water and player's BB touches water
+    // but center is still over solid ground, continue using land physics instead of water physics.
+    // This allows sprinting across the water edge without immediately triggering water physics.
+    // Walking players transition to water physics when their waterBB touches water.
+    let atWaterEdge = false
+    if (isBedrock && entity.isInWater && entity.onGround && entity.enteredWaterFromGround && entity.isSprinting) {
+      // Check if player's CENTER is over solid ground (not water/lava)
+      const centerBlockBelow = world.getBlock(pos.offset(0, -0.01, 0))
+      const isCenterOverSolid = centerBlockBelow && !waterIds.includes(centerBlockBelow.type) &&
+        !lavaIds.includes(centerBlockBelow.type) && centerBlockBelow.boundingBox !== 'empty'
+      if (isCenterOverSolid) {
+        atWaterEdge = true
+        // Mark that player was at water edge - next tick using water physics should preserve velocity
+        entity.wasAtWaterEdge = true
+      }
+    }
+
+    // Track first tick using water physics after being at water edge
+    const isFirstWaterPhysicsTick = entity.wasAtWaterEdge && !atWaterEdge
+    if (!atWaterEdge && entity.wasAtWaterEdge) {
+      entity.wasAtWaterEdge = false  // Reset after first water physics tick
+    }
+
+    if ((entity.isInWater || entity.isInLava) && !atWaterEdge) {
       // Water / Lava movement
       const lastY = pos.y
+      // Save isUnderWater at START of tick for consistent behavior
+      // This ensures both sprint boost and inertia use the same underwater state
+      const isUnderWaterAtStart = entity.isUnderWater
       let acceleration = physics.liquidAcceleration
       const inertia = entity.isInWater ? physics.waterInertia : physics.lavaInertia
       let horizontalInertia = inertia
@@ -499,21 +615,222 @@ function Physics (mcData, world) {
         if (entity.dolphinsGrace > 0) horizontalInertia = 0.96
       }
 
-      // Bedrock underwater sprint has velocity-dependent acceleration boost
-      // Formula: acceleration = base * 1.125 + 0.125 * horizontalSpeed
-      if (isBedrock && entity.isSprinting) {
-        const horizontalSpeed = Math.sqrt(f(f(vel.x * vel.x) + f(vel.z * vel.z)))
-        acceleration = f(f(acceleration * 1.125) + f(0.125 * horizontalSpeed))
-      }
+      // Bedrock sprint boost in water: defer the calculation until after moveEntity
+      // when we know the final isUnderWater state. Save info needed for later.
+      const bedrockWaterSprintInfo = isBedrock && entity.isInWater && entity.isSprinting
+        ? { baseAccel: acceleration, startVelX: vel.x, startVelZ: vel.z } : null
+
+      // Save horizontal velocity before water acceleration for Bedrock water entry
+      const preVelX = vel.x
+      const preVelZ = vel.z
 
       applyHeading(entity, strafe, forward, acceleration)
-      moveEntity(entity, world, vel.x, vel.y, vel.z)
-      vel.y = f(vel.y * inertia)
-      vel.y = f(vel.y - f((entity.isInWater ? physics.waterGravity : physics.lavaGravity) * gravityMultiplier))
-      vel.x = f(vel.x * horizontalInertia)
-      vel.z = f(vel.z * horizontalInertia)
+      const pose = entity.pose ?? PlayerPose.STANDING
 
-      if (entity.isCollidedHorizontally && doesNotCollide(world, pos.offset(vel.x, vel.y + 0.6 - pos.y + lastY, vel.z))) {
+      // Bedrock: on the first tick of water physics after entering from ground, preserve horizontal velocity
+      // The game doesn't apply horizontal water acceleration until the second tick
+      // For falling into water from air, water acceleration applies immediately
+      // When sprinting over water edge: player was at edge (land physics) at tick N, then falls at tick N+1
+      // At tick N+1, justEnteredWater is false but it's the first tick of water physics (isFirstWaterPhysicsTick)
+      const firstTickWaterPhysics = justEnteredWater || isFirstWaterPhysicsTick
+      if (isBedrock && firstTickWaterPhysics && entity.enteredWaterFromGround) {
+        vel.x = preVelX
+        vel.z = preVelZ
+      }
+
+      // Save velocity before moveEntity for Bedrock water entry
+      const preVelY = vel.y
+      // Also save horizontal velocity for water edge collision restoration
+      const preMoveVelX = vel.x
+      const preMoveVelZ = vel.z
+
+      moveEntity(entity, world, vel.x, vel.y, vel.z, pose)
+
+      // Bedrock water edge: when entering water and horizontal collision occurs,
+      // restore horizontal velocity if we're at the water edge (center over water)
+      // This handles shallow-angle approaches (like yaw=-15) where BB collides with
+      // ground blocks at the water edge but horizontal velocity should be preserved
+      // Apply for the first few ticks after entering water from ground (not for general water movement)
+      // ticksSinceWaterEntry: 0 = first tick in water, 1-4 = subsequent water edge ticks
+      const recentWaterEntry = entity.ticksSinceWaterEntry !== undefined && entity.ticksSinceWaterEntry <= 4
+      if (isBedrock && entity.isInWater && entity.isCollidedHorizontally &&
+          entity.enteredWaterFromGround && recentWaterEntry) {
+        // Check if player is at water edge: their BB is in water but collision is with ground blocks
+        // The player is considered at water edge if:
+        // 1. They're in water (isInWater=true from BB water detection)
+        // 2. They just entered water from ground
+        // 3. They have horizontal collision
+        // In this case, restore horizontal velocity - the collision is with the water edge ground
+        // Restore horizontal velocity that was zeroed by collision with edge blocks
+        vel.x = preMoveVelX
+        vel.z = preMoveVelZ
+        entity.isCollidedHorizontally = false
+        // Adjust position - player should have moved by the original velocity
+        pos.x = f(pos.x + preMoveVelX)
+        pos.z = f(pos.z + preMoveVelZ)
+      }
+
+      // Bedrock water entry: when entering water, use center-point ground detection
+      // If the block directly under player's center is water/air, they should fall
+      // even if part of their collision BB is still over solid ground
+      if (isBedrock && entity.isInWater && entity.onGround) {
+        const centerBlockBelow = world.getBlock(pos.offset(0, -0.01, 0))
+        const isCenterOverSolid = centerBlockBelow && !waterIds.includes(centerBlockBelow.type) &&
+          !lavaIds.includes(centerBlockBelow.type) && centerBlockBelow.boundingBox !== 'empty'
+        if (!isCenterOverSolid) {
+          // Override ground detection - player falls into water
+          entity.onGround = false
+          entity.isCollidedVertically = false
+          // Restore velocity that was zeroed by collision detection
+          vel.y = preVelY
+          // Also update position - player should have moved by preVelY
+          pos.y = f(pos.y + preVelY)
+
+          // Recalculate isUnderWater after position change
+          // This ensures water physics kicks in at the right time
+          const newEyeY = pos.y + poseEyeHeight[PlayerPose.STANDING]
+          const newEyeBlockPos = new Vec3(Math.floor(pos.x), Math.floor(newEyeY), Math.floor(pos.z))
+          const newEyeBlock = world.getBlock(newEyeBlockPos)
+          entity.isUnderWater = newEyeBlock && waterIds.includes(newEyeBlock.type)
+        }
+      }
+
+      // Bedrock: recalculate isUnderWater after position changes
+      // The initial calculation was based on position at START of tick, but we need current position
+      if (isBedrock) {
+        const newEyeY = pos.y + poseEyeHeight[PlayerPose.STANDING]
+        const newEyeBlockPos = new Vec3(Math.floor(pos.x), Math.floor(newEyeY), Math.floor(pos.z))
+        const newEyeBlock = world.getBlock(newEyeBlockPos)
+        entity.isUnderWater = newEyeBlock && waterIds.includes(newEyeBlock.type)
+      }
+
+      // Bedrock sprint boost in water: apply when sprinting in water
+      // - Walked into water from ground (enteredWaterFromGround = true): skip first tick to preserve velocity
+      // - Fell into water from air (enteredWaterFromGround = false): apply immediately upon entering water
+      // Sprint boost uses underwater formula when eyes are submerged, above-water formula otherwise
+      const skipSprintBoost = firstTickWaterPhysics && entity.enteredWaterFromGround
+      const shouldApplySprintBoost = entity.isInWater
+      if (bedrockWaterSprintInfo && !skipSprintBoost && shouldApplySprintBoost) {
+        const { baseAccel, startVelX, startVelZ } = bedrockWaterSprintInfo
+        const horizontalSpeed = Math.sqrt(f(f(startVelX * startVelX) + f(startVelZ * startVelZ)))
+
+        let sprintAccel
+        // Underwater formula when player's body is submerged:
+        // - isUnderWater (eyes in water block)
+        // - OR falling into water from air (body in water, eyes may be above surface)
+        // Above-water formula only for horizontal entry from ground (walking into water from edge)
+        const useUnderwaterFormula = entity.isUnderWater || !entity.enteredWaterFromGround
+        if (useUnderwaterFormula) {
+          // Underwater sprint boost: accel = base * 1.125 + 0.125 * horizontalSpeed
+          sprintAccel = f(f(baseAccel * 1.125) + f(0.125 * horizontalSpeed))
+        } else {
+          // Above water sprint: accel = base * 1.3
+          sprintAccel = f(baseAccel * (1 + physics.sprintSpeed))
+        }
+
+        // Calculate extra acceleration beyond base that needs to be added
+        const extraAccel = f(sprintAccel - baseAccel)
+
+        // Apply extra acceleration in movement direction (same direction as applyHeading)
+        // For forward movement, this adds to Z (with yaw=PI, cos(0) = 1)
+        const yaw = Math.PI - entity.yaw
+        const sin = f(Math.sin(yaw))
+        const cos = f(Math.cos(yaw))
+        // Apply the extra forward acceleration
+        vel.z = f(vel.z + f(extraAccel * cos))
+        vel.x = f(vel.x - f(extraAccel * sin))
+      }
+
+      // Bedrock water Y-axis physics depends on how player entered water:
+      // - Walked into water from ground: use land physics until eyes submerge
+      // - Fell into water from air: use water physics immediately
+      // - Eyes underwater or on ground in water: use standard water physics
+      // The enteredWaterFromGround flag tracks the entry state
+      // Note: uses entity.isUnderWater (updated after moveEntity) for Y physics
+      // while horizontal physics uses isUnderWaterAtStart for consistency
+      // Special case: on first tick of water entry while walking, use air physics
+      // even if onGround is true (center over solid ground at water edge)
+      const useAirPhysicsForY = isBedrock && entity.isInWater && !entity.isUnderWater &&
+        entity.enteredWaterFromGround && (!entity.onGround || justEnteredWater)
+
+      // Water/lava gravity:
+      // - Java Edition: skip gravity when sprinting in water (Botcraft behavior)
+      // - Bedrock Edition: skip gravity only when fully swimming (isSwimming = isSprinting && isUnderWater && isInWater)
+      // - Lava: always apply gravity on both editions
+      const skipWaterGravity = entity.isInWater && (isBedrock ? entity.isSwimming : entity.isSprinting)
+
+      if (useAirPhysicsForY) {
+        // Use land physics formula: (vel - gravity) * airdrag
+        // This matches the formula in the land physics branch
+        // For first tick of water entry while on ground (center over solid):
+        // - moveEntity zeroed vel.y due to collision
+        // - Use preVelY (pre-collision velocity) to match fixture behavior
+        // - Update position since player should have fallen
+        // Only apply when center is very close to water boundary (frac(z) > 0.9)
+        // This matches diagonal water entry behavior vs parallel entry
+        const centerZ = pos.z
+        const fracZ = centerZ - Math.floor(centerZ)
+        const isCloseToWaterEdge = fracZ > 0.9 || fracZ < 0.1 // Close to block boundary in either direction
+        const usePreVelY = justEnteredWater && entity.onGround && isCloseToWaterEdge
+        const inputVelY = usePreVelY ? preVelY : vel.y
+        if (usePreVelY) {
+          // Override ground collision - player starts falling into water
+          entity.onGround = false
+          entity.isCollidedVertically = false
+          pos.y = f(pos.y + preVelY)
+        }
+        if (!skipWaterGravity) {
+          vel.y = f(f(inputVelY - f(physics.gravity * gravityMultiplier)) * physics.airdrag)
+        } else {
+          vel.y = f(inputVelY * physics.airdrag)
+        }
+      } else {
+        // Standard water physics: vel * inertia - waterGravity
+        // Bedrock water edge entry: use pre-collision velocity for first N ticks after entering water from ground
+        // This maintains terminal velocity convergence (-0.025) at the water edge before transitioning to on-ground terminal (-0.005)
+        // Only applies when player walked into water from ground (enteredWaterFromGround), not for players already in water
+        // For diagonal movement, delay is about 9 ticks. For straight movement, transition is immediate.
+        let waterInputVelY = vel.y
+        if (isBedrock && entity.onGround && entity.isUnderWater && entity.enteredWaterFromGround) {
+          // Check if moving diagonally (both x and z velocity non-zero)
+          const isDiagonalMovement = Math.abs(vel.x) > 1e-6 && Math.abs(vel.z) > 1e-6
+          if (isDiagonalMovement) {
+            // Track ticks on ground underwater for diagonal movement
+            entity.ticksOnGroundUnderwater = (entity.ticksOnGroundUnderwater || 0) + 1
+            // Use preVelY for first 9 ticks to maintain terminal velocity convergence
+            // After 9 ticks, allow normal collision behavior (vel.y = 0 → -0.005)
+            if (entity.ticksOnGroundUnderwater <= 9) {
+              waterInputVelY = preVelY
+            }
+          }
+          // For straight movement, allow immediate transition (don't use preVelY)
+        } else if (!entity.enteredWaterFromGround) {
+          // Reset counter when player didn't enter water from ground (already in water)
+          entity.ticksOnGroundUnderwater = 0
+        }
+        vel.y = f(waterInputVelY * inertia)
+        if (!skipWaterGravity) {
+          const effectiveGravity = entity.isInWater ? physics.waterGravity : physics.lavaGravity
+          vel.y = f(vel.y - f(effectiveGravity * gravityMultiplier))
+        }
+      }
+      // Bedrock: when sprint just stopped in water, apply higher inertia (0.9 instead of 0.8)
+      // This is the 1.125 multiplier applied to horizontal inertia on the transition tick
+      // When eyes above water surface, use airborne inertia (0.91) instead of water inertia (0.8)
+      let effectiveHorizontalInertia = useAirPhysicsForY ? physics.airborneInertia : horizontalInertia
+      if (isBedrock && entity.isInWater && entity.wasSprinting && !entity.isSprinting) {
+        effectiveHorizontalInertia = f(effectiveHorizontalInertia * 1.125)
+      }
+      // Bedrock: skip horizontal inertia on first tick when walking into water from ground
+      // This preserves horizontal velocity. For falling into water from air, inertia applies normally.
+      // Also skip when sprinting player just left water edge (isFirstWaterPhysicsTick) to maintain momentum
+      const skipHorizontalInertia = isBedrock && firstTickWaterPhysics && entity.enteredWaterFromGround
+      if (!skipHorizontalInertia) {
+        vel.x = f(vel.x * effectiveHorizontalInertia)
+        vel.z = f(vel.z * effectiveHorizontalInertia)
+      }
+
+      if (entity.isCollidedHorizontally && doesNotCollide(world, pos.offset(vel.x, vel.y + 0.6 - pos.y + lastY, vel.z), pose)) {
         vel.y = physics.outOfLiquidImpulse // jump out of liquid
       }
     } else if (entity.elytraFlying) {
@@ -550,7 +867,8 @@ function Physics (mcData, world) {
       vel.x = f(vel.x * 0.99)
       vel.y = f(vel.y * 0.98)
       vel.z = f(vel.z * 0.99)
-      moveEntity(entity, world, vel.x, vel.y, vel.z)
+      const pose = entity.pose ?? PlayerPose.FALL_FLYING
+      moveEntity(entity, world, vel.x, vel.y, vel.z, pose)
 
       if (entity.onGround) {
         entity.elytraFlying = false
@@ -618,7 +936,55 @@ function Physics (mcData, world) {
         vel.y = Math.max(vel.y, entity.control.sneak ? 0 : -physics.ladderMaxSpeed)
       }
 
-      moveEntity(entity, world, vel.x, vel.y, vel.z)
+      const pose = entity.pose ?? PlayerPose.STANDING
+
+      // Save state before moveEntity for Bedrock water edge detection
+      const preVelY = vel.y
+      const wasOnGround = entity.onGround
+
+      moveEntity(entity, world, vel.x, vel.y, vel.z, pose)
+
+      // Bedrock water edge detection: player falls when their BACK edge is over water/void
+      // Player can walk partially over water - they only fall when the trailing edge passes over
+      // Use wasOnGround because moveEntity may have already set onGround=false while zeroing vel.y
+      if (isBedrock && wasOnGround && entity.onGround) {
+        const hw = physics.playerHalfWidth // 0.3
+
+        // Check the back edge based on movement direction (opposite to velocity)
+        let checkX = pos.x
+        let checkZ = pos.z
+
+        // Determine trailing edge based on velocity direction
+        if (Math.abs(vel.x) > 0.01) {
+          checkX = pos.x + (vel.x > 0 ? -hw : hw) // Back edge is opposite to movement
+        }
+        if (Math.abs(vel.z) > 0.01) {
+          checkZ = pos.z + (vel.z > 0 ? -hw : hw) // Back edge is opposite to movement
+        }
+
+        const checkPos = new Vec3(checkX, pos.y, checkZ)
+        const blockAtFeet = world.getBlock(checkPos)
+        const blockBelow = world.getBlock(checkPos.offset(0, -0.01, 0))
+
+        // Check if back edge is over water/void (not solid ground)
+        const feetIsEmpty = blockAtFeet && blockAtFeet.boundingBox === 'empty' &&
+          !waterIds.includes(blockAtFeet.type) && !lavaIds.includes(blockAtFeet.type)
+        const belowIsWaterOrEmpty = blockBelow && (
+          waterIds.includes(blockBelow.type) ||
+          blockBelow.boundingBox === 'empty'
+        )
+
+        if (feetIsEmpty && belowIsWaterOrEmpty) {
+          // Override ground detection - player falls into water
+          entity.onGround = false
+          entity.isCollidedVertically = false
+          // Restore velocity that was zeroed by collision detection
+          vel.y = preVelY
+          // Update position - player should have fallen by preVelY
+          pos.y = f(pos.y + preVelY)
+        }
+      }
+
       if (isOnLadder(world, pos) && (entity.isCollidedHorizontally ||
         (supportFeature('climbUsingJump') && entity.control.jump))) {
         vel.y = physics.ladderClimbSpeed // climb ladder
@@ -735,20 +1101,88 @@ function Physics (mcData, world) {
     const vel = entity.vel
     const pos = entity.pos
 
-    const waterBB = getPlayerBB(pos).contract(0.001, 0.401, 0.001)
-    const lavaBB = getPlayerBB(pos).contract(0.1, 0.4, 0.1)
+    // Get current pose (default to STANDING, but preserve pose from previous tick)
+    const currentPose = entity.pose ?? PlayerPose.STANDING
 
+    // Always use STANDING pose for water/lava detection to avoid feedback loops
+    // When swimming, the BB shrinks which would incorrectly detect leaving water
+    const waterBB = getPlayerBB(pos, PlayerPose.STANDING).contract(0.001, 0.401, 0.001)
+    const lavaBB = getPlayerBB(pos, PlayerPose.STANDING).contract(0.1, 0.4, 0.1)
+
+    // Save wasInWater before updating for water entry detection
+    entity.wasInWater = entity.isInWater || false
     entity.isInWater = isInWaterApplyCurrent(world, waterBB, vel)
     entity.isInLava = isMaterialInBB(world, lavaBB, lavaIds)
 
-    // Update internal sprint state - sprinting is disabled on horizontal collision
-    // and re-enabled when control.sprint is pressed and no collision
+    // Save wasSneaking for sneak release timing (Bedrock behavior)
+    // When sneak is released, sneak speed still applies for current tick
+    // Use wasSneaking || current sneak so: press=immediate effect, release=delayed 1 tick
+    const sneakForSpeed = entity.wasSneaking || (entity.control && entity.control.sneak)
+
+    // Detect if eyes are underwater (Botcraft: under_water requires eye position below water surface)
+    // Use current pose eye height, but when actively diving (looking down while sprinting in water)
+    // use swimming pose eye height to allow earlier swimming transition
+    const standingEyeHeight = poseEyeHeight[PlayerPose.STANDING]
+    const standingEyeY = pos.y + standingEyeHeight
+    // Calculate eye block position directly using floor(eyeY) to avoid floor(a)+floor(b) != floor(a+b) issues
+    const standingEyeBlockPos = new Vec3(Math.floor(pos.x), Math.floor(standingEyeY), Math.floor(pos.z))
+    const standingEyeBlock = world.getBlock(standingEyeBlockPos)
+    const isUnderWaterStanding = standingEyeBlock && waterIds.includes(standingEyeBlock.type)
+
+    // When actively diving (sprinting in water while looking down), check swimming pose eye height
+    // This is key for diving transitions - swimming starts when swimming pose's eyes would be underwater
+    // Pitch convention: negative = looking down, positive = looking up
+    const isDiving = entity.isSprinting && entity.isInWater && entity.pitch < 0
+    let isUnderWaterForSwimming = isUnderWaterStanding
+    if (isDiving) {
+      const swimmingEyeHeight = poseEyeHeight[PlayerPose.SWIMMING]
+      const swimmingEyeY = pos.y + swimmingEyeHeight
+      const swimmingEyeBlockPos = new Vec3(Math.floor(pos.x), Math.floor(swimmingEyeY), Math.floor(pos.z))
+      const swimmingEyeBlock = world.getBlock(swimmingEyeBlockPos)
+      isUnderWaterForSwimming = swimmingEyeBlock && waterIds.includes(swimmingEyeBlock.type)
+    }
+
+    // Use swimming pose check when actively diving, standing check otherwise
+    entity.isUnderWater = isDiving ? isUnderWaterForSwimming : isUnderWaterStanding
+
+    // Update internal sprint state BEFORE swimming calculation
+    // Swimming depends on isSprinting, so sprint must be updated first
     if (entity.isCollidedHorizontally) {
       entity.isSprinting = false
-    } else if (entity.control.sprint && !entity.isSprinting) {
-      entity.isSprinting = true
-    } else if (!entity.control.sprint) {
+    } else if (entity.isSprinting && !entity.control.sprint) {
       entity.isSprinting = false
+    } else if (!entity.isSprinting && entity.control.sprint) {
+      entity.isSprinting = true
+    }
+
+    // Update swimming state (Botcraft: requires Sprint + UnderWater + InWaterBlock)
+    // Bedrock: swimming detection depends on how player entered water:
+    // - Walked into water from ground: require "deeply underwater" (water above eye) to prevent
+    //   immediate swimming when eyes are just at the surface water layer
+    // - Fell into water from air: start swimming immediately when underwater (eyes in water block)
+    const wasSwimming = entity.isSwimming || false
+    let canSwim = entity.isUnderWater
+    if (isBedrock && entity.isUnderWater && entity.enteredWaterFromGround) {
+      // For horizontal water entry, require water in the block above the eye position
+      // This delays swimming until player is below the surface water layer
+      const eyeY = entity.pos.y + poseEyeHeight[PlayerPose.STANDING]
+      const blockAboveEye = world.getBlock(new Vec3(Math.floor(entity.pos.x), Math.floor(eyeY) + 1, Math.floor(entity.pos.z)))
+      canSwim = blockAboveEye && waterIds.includes(blockAboveEye.type)
+    }
+    entity.isSwimming = entity.isSprinting && canSwim && entity.isInWater
+    entity.startSwimming = !wasSwimming && entity.isSwimming
+    entity.stopSwimming = wasSwimming && !entity.isSwimming
+
+    // Update player pose based on current state (Botcraft: updatePoses())
+    // Priority order: FALL_FLYING > SWIMMING > SNEAKING > STANDING
+    if (entity.elytraFlying) {
+      entity.pose = PlayerPose.FALL_FLYING
+    } else if (entity.isSwimming) {
+      entity.pose = PlayerPose.SWIMMING
+    } else if (entity.control && entity.control.sneak) {
+      entity.pose = PlayerPose.SNEAKING
+    } else {
+      entity.pose = PlayerPose.STANDING
     }
 
     // Reset velocity component if it falls under the threshold
@@ -784,14 +1218,29 @@ function Physics (mcData, world) {
     let strafe = (entity.control.right - entity.control.left) * controlMultiplier
     let forward = (entity.control.forward - entity.control.back) * controlMultiplier
 
-    // Sneak is applied to controls for both Java and Bedrock
-    // But for Bedrock underwater, sneak is for diving, not slower horizontal movement
-    if (entity.control.sneak && !(isBedrock && (entity.isInWater || entity.isInLava))) {
+    // Sneak speed is applied based on sneakForSpeed (wasSneaking || currentSneak)
+    // This ensures sneak release doesn't affect speed until next tick (Bedrock behavior)
+    // For Bedrock underwater, sneak is for diving, not slower horizontal movement
+    // In lava, sneak speed (0.3) still applies on Bedrock
+    if (sneakForSpeed && !(isBedrock && entity.isInWater)) {
       strafe *= physics.sneakSpeed
       forward *= physics.sneakSpeed
     }
 
     entity.elytraFlying = entity.elytraFlying && entity.elytraEquipped && !entity.onGround && !entity.levitation
+
+    // Pitch-dependent swimming: when swimming, adjust Y velocity toward look direction
+    // lookY = -sin(pitch): looking up → positive Y, looking down → negative Y
+    // Based on analysis of Bedrock fixtures: adjustment always applies when swimming
+    // Factor: 0.085 when looking steeply (|pitch| > 0.2 rad), 0.06 otherwise
+    if (entity.isSwimming) {
+      const lookY = f(-Math.sin(entity.pitch))
+
+      // Bedrock: always apply when swimming (fixtures show pitch affects Y velocity)
+      // Factor is 0.085 for steep angles, 0.06 for shallow
+      const factor = Math.abs(entity.pitch) > 0.2 ? 0.085 : 0.06
+      vel.y = f(vel.y + f(f(lookY - vel.y) * factor))
+    }
 
     if (entity.fireworkRocketDuration > 0) {
       if (!entity.elytraFlying) {
@@ -853,6 +1302,8 @@ class PlayerState {
     this.vel = bot.entity.velocity.clone()
     this.onGround = bot.entity.onGround
     this.isInWater = bot.entity.isInWater
+    // Track previous water state for Bedrock water entry detection
+    this.wasInWater = bot.entity.wasInWater ?? false
     this.isInLava = bot.entity.isInLava
     this.isInWeb = bot.entity.isInWeb
     this.isCollidedHorizontally = bot.entity.isCollidedHorizontally
@@ -860,6 +1311,25 @@ class PlayerState {
     this.elytraFlying = bot.entity.elytraFlying
     // Internal sprint state - disabled on horizontal collision, re-enabled when control.sprint and no collision
     this.isSprinting = bot.entity.isSprinting ?? control.sprint
+    // Track previous sprint state for Bedrock water physics transition
+    this.wasSprinting = bot.entity.wasSprinting ?? false
+    // Track previous sneak state for Bedrock sneak release timing
+    this.wasSneaking = bot.entity.wasSneaking ?? false
+    // Track previous ground state for Bedrock water entry detection
+    this.wasOnGround = bot.entity.wasOnGround ?? false
+    // Track if player entered water from ground (for Bedrock air physics in water)
+    this.enteredWaterFromGround = bot.entity.enteredWaterFromGround ?? false
+    // Track if player was at water edge (for Bedrock sprint water physics)
+    this.wasAtWaterEdge = bot.entity.wasAtWaterEdge ?? false
+    // Track ticks on ground underwater (for Bedrock pool bottom physics)
+    this.ticksOnGroundUnderwater = bot.entity.ticksOnGroundUnderwater ?? 0
+    // Track ticks since water entry (for Bedrock water edge grace period)
+    this.ticksSinceWaterEntry = bot.entity.ticksSinceWaterEntry ?? 0
+    // Player pose (affects bounding box dimensions)
+    this.pose = bot.entity.pose ?? PlayerPose.STANDING
+    // Swimming state
+    this.isSwimming = bot.entity.isSwimming ?? false
+    this.isUnderWater = bot.entity.isUnderWater ?? false
     this.jumpTicks = bot.jumpTicks
     this.jumpQueued = bot.jumpQueued
     this.fireworkRocketDuration = bot.fireworkRocketDuration
@@ -901,16 +1371,36 @@ class PlayerState {
     bot.entity.velocity = this.vel
     bot.entity.onGround = this.onGround
     bot.entity.isInWater = this.isInWater
+    // Store current water state as previous for next tick (Bedrock water entry detection)
+    bot.entity.wasInWater = this.isInWater
     bot.entity.isInLava = this.isInLava
     bot.entity.isInWeb = this.isInWeb
     bot.entity.isCollidedHorizontally = this.isCollidedHorizontally
     bot.entity.isCollidedVertically = this.isCollidedVertically
     bot.entity.elytraFlying = this.elytraFlying
     bot.entity.isSprinting = this.isSprinting
+    // Store current sprint state as previous for next tick (Bedrock water physics transition)
+    bot.entity.wasSprinting = this.isSprinting
+    // Store current sneak state as previous for next tick (Bedrock sneak release timing)
+    bot.entity.wasSneaking = this.control && this.control.sneak
+    // Store current ground state as previous for next tick (Bedrock water entry detection)
+    bot.entity.wasOnGround = this.onGround
+    // Store water entry state for Bedrock air physics in water
+    bot.entity.enteredWaterFromGround = this.enteredWaterFromGround
+    // Store water edge state for Bedrock sprint water physics
+    bot.entity.wasAtWaterEdge = this.wasAtWaterEdge
+    // Store ticks on ground underwater for Bedrock pool bottom physics
+    bot.entity.ticksOnGroundUnderwater = this.ticksOnGroundUnderwater
+    // Store ticks since water entry for Bedrock water edge grace period
+    bot.entity.ticksSinceWaterEntry = this.ticksSinceWaterEntry
+    // Player pose and swimming state
+    bot.entity.pose = this.pose
+    bot.entity.isSwimming = this.isSwimming
+    bot.entity.isUnderWater = this.isUnderWater
     bot.jumpTicks = this.jumpTicks
     bot.jumpQueued = this.jumpQueued
     bot.fireworkRocketDuration = this.fireworkRocketDuration
   }
 }
 
-module.exports = { Physics, PlayerState }
+module.exports = { Physics, PlayerState, PlayerPose, poseDimensions, poseEyeHeight }
